@@ -1,0 +1,142 @@
+#
+# - state-machine controlling a single zookeeper broker
+# - please note /tmp/state will be used as our kontrol slave payload
+#
+initial: setup
+terminal: stop
+states:
+- tag: setup
+  shell: |
+
+    #
+    # - make sure /data is there
+    # - render the server.properties file
+    # - override our defaults by what's found in the pod annotations
+    #
+    mkdir -p /data
+    ls -l /data
+    python - <<-EOF
+    import os
+    import json
+    import re
+    from jinja2 import Template
+
+    #
+    # - the kafka broker is configured to expose the pod IP
+    # - those settings can be overriden from the pod annotations
+    # - by default zookeeper is looked up in the current namespace
+    #
+    local = '%s:9092' % os.environ['KONTROL_IP']
+    cfg = \
+    {
+        'broker.id': '-1',
+        'delete.topic.enable': 'true',
+        'listeners': 'PLAINTEXT://%s' % local,
+        'listener.security.protocol.map': 'PLAINTEXT:PLAINTEXT,SSL:SSL,SASL_PLAINTEXT:SASL_PLAINTEXT,SASL_SSL:SASL_SSL',
+        'num.network.threads': '3',
+        'num.io.threads': '8',
+        'socket.send.buffer.bytes': '102400',
+        'socket.receive.buffer.bytes': '102400',
+        'socket.request.max.bytes': '104857600',
+        'log.dirs': '/data/logs',
+        'num.partitions': '1',
+        'num.recovery.threads.per.data.dir': '1',
+        'log.flush.interval.messages': '10000',
+        'log.flush.interval.ms': '1000',
+        'log.retention.hours': '168',
+        'log.retention.bytes': '1073741824',
+        'log.segment.bytes': '1073741824',
+        'log.retention.check.interval.ms': '300000',
+        'zookeeper.connect': 'zookeeper.%s.svc:2181' % os.environ['NAMESPACE'],
+        'zookeeper.connection.timeout.ms': '6000'      
+    }
+
+    #
+    # - peek into the annotations
+    # - override the default settings with the key/value pairs found
+    #   under kafka.unity3d.com/overrides
+    #
+    try:
+      js = json.loads(os.environ['KONTROL_ANNOTATIONS'])
+      for line in js['kafka.unity3d.com/overrides'].split('\n'):
+        if line:
+          tok = line.split('=')
+          cfg[tok[0].strip()] = tok[1].strip()
+      
+    except (KeyError, ValueError, TypeError):
+      pass
+
+    #
+    # - write it to /data
+    #
+    raw = \
+    """
+        {%- for key in cfg | sort %}
+        {{key}}={{cfg[key]}}
+        {%- endfor %}
+    """
+    with open('/data/server.properties', 'wb') as fd:
+        fd.write(Template(raw).render(cfg=cfg))    
+
+    #
+    # - render our pixy configuration
+    # - re-use the local broker (e.g pod IP) and zookeeper
+    #
+    raw = \
+    """
+      proxies:
+        default:
+          kafka:
+            seed_peers:
+              - {{local}}
+            version: 0.8.2.2
+          zoo_keeper:
+            seed_peers:
+              {%- for host in zookeeper | sort %}
+              - {{host}}
+              {%- endfor %}
+          producer:
+            channel_buffer_size: 4096
+            compression: snappy
+            flush_bytes: 1048576
+            flush_frequency: 500ms
+            retry_backoff: 10s
+            retry_max: 6
+            required_acks: wait_for_all
+            shutdown_timeout: 30s
+          consumer:
+            ack_timeout: 15s
+            channel_buffer_size: 64
+            fetch_bytes: 1048576
+            long_polling_timeout: 3s
+            offsets_commit_interval: 500ms
+            rebalance_delay: 250ms
+            registration_timeout: 20s
+            retry_backoff: 500ms    
+    """
+    with open('/data/pixy.yaml', 'wb') as fd:
+        fd.write(Template(raw).render(local=local, zookeeper=cfg['zookeeper.connect'].split(',')))    
+
+    EOF
+
+    #
+    # - append the statsd telegraf input
+    # - start telegraf
+    # - start the kafka broker
+    # - start the pixy proxy
+    #
+    cat <<EOT >> /etc/telegraf/telegraf.conf
+    [[inputs.statsd]]
+      service_address = "127.0.0.1:8125"
+    EOT
+    supervisorctl start telegraf
+    supervisorctl start kafka
+    supervisorctl start pixy
+  next:
+    - stop
+    
+- tag: stop
+  shell: |
+    echo foo    
+  next: 
+    - stop
