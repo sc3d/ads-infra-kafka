@@ -1,31 +1,72 @@
-## Apache Kafka/Pixy+Kontrol pod
+## HAProxy+Kontrol pod
 
 ### Overview
 
 This project is a [**Docker**](https://www.docker.com) image packaging
-[**Apache Kafka 0.10.2.1**](https://kafka.apache.org/) together with
-[**Pixy**](https://github.com/mailgun/kafka-pixy) and
+[**HAProxy 1.7.5**](http://www.haproxy.org/) together with
 [**Kontrol**](https://github.com/UnityTech/ads-infra-kontrol). It is meant
 to be included in a [**Kubernetes**](https://github.com/GoogleCloudPlatform/kubernetes)
 pod.
 
-The container will just run the JVM broker and does not include a control tier: *kontrol* runs
-in slave mode which means you need to point to one or more control tiers in the YAML manifest.
+The container will run its own control-tier which will re-configure the proxy
+configuration anytime downstream listeners are added or removed. Any downstream
+entity wishing to be included in the proxy configuration **must** specify this
+pod as its *kontrol* master.
 
 ### Lifecycle
 
-Turning the JVM on/off is done via a regular supervisor job. If a broker fails
-(e.g is not serving requests anymore) the automaton will attempt to re-start it.
+The HAProxy instance is driven as a regular supervisor job via the *wrapped.sh* script.
+This scipt will launch a daemon proxy and keep track of its PID file. Restarting the
+job will spawn a new HAProxy process and gracefully drain the old on. During this
+transition SYN packets will be disabled via *iptables*. Please look at *lifecycle.yml*
+for more details.
+
+The *kontrol* callback will isolate slaves that are not HAProxy and ask the proxy pods
+to re-configure using their IP addresses.
 
 The initial state will render the various configuration files including the
-[**telegraf**](https://github.com/influxdata/telegraf) one. The broker is configured
-to use dynamic id assignment (e.g from the data volume or zookeeper). Both the broker
-and its proxy are started immediately.
+[**telegraf**](https://github.com/influxdata/telegraf) one. The state will then cycle
+thru one or more configuration sequences with the file written under */data*. The
+proxy supervisor job is then restarted. Any change detected by *kontrol* will trip
+the state-machine back to that configuration state.
 
-### Pixy
+### TLS support
 
-The pixy proxy is bundled in the image as well and configured against the local broker. It
-exposes a gRPC as well as a HTTP API at TCP 19091 and 19092.
+This feature is currently not supported and is planned.
+
+### Configuring the proxy
+
+Configuration is done via the *haproxy.unity3d.com/config* annotation. This payload
+is rendered using [**Jinja 2**](http://jinja.pocoo.org/docs/2.9/). A map of arrays holding
+IP addresses for each distinct set of downstream entities reporting to the proxy is
+provided as the *hosts* variable. For instance:
+
+```
+annotations:
+  haproxy.unity3d.com/config: |
+
+    frontend proxy
+      bind                *:80
+      default_backend     http
+
+    backend http
+      mode                http
+      retries             3
+      option              redispatch
+      option              forwardfor
+      option              httpchk GET /health
+      option              httpclose
+      option              httplog
+      balance             leastconn
+      http-check expect   status 200
+      default-server      inter 5s fall 1 rise 1
+
+      {%- for key in hosts %}
+      {%- for ip in hosts[key] %}
+      server {{key}}-{{loop.index}} {{ip}}:80 check on-error mark-down observe layer7 error-limit 1
+      {%- endfor %}
+      {%- endfor %}
+```
 
 ### Building the image
 
@@ -37,34 +78,42 @@ $ docker build -f alpine-3.5/Dockerfile .
 
 ### Manifest
 
-It is important to run this pod as a *stateful set* in order to keep volumes properly
-assigned. Note that anti-affinity should be used to spread the pods and land the brokers
-on separate machines. For instance:
+Simply use this pod in a deployment and assign it to an array with external
+access using a node-port service. For instance:
 
 ```
-apiVersion: apps/v1beta1
-kind: StatefulSet
+apiVersion: extensions/v1beta1
+kind: Deployment
 metadata:
-  name: kafka
-  namespace: test
+  name: haproxy
 spec:
-  serviceName: kafka
-  replicas: 3
+  replicas: 1
   template:
     metadata:
       labels:
-        app: kafka
-        role: broker
-        tier: data
+        app: haproxy
+        role: balancer
+        tier: traffic
       annotations:
+        kontrol.unity3d.com/master: haproxy.default.svc
         kontrol.unity3d.com/opentsdb: kairosdb.us-east-1.applifier.info
-        kafka.unity3d.com/overrides: |
-          default.replication.factor=3
-          num.partitions=32
-          retention.ms=259200000
+        haproxy.unity3d.com/config: |
+
+          frontend proxy
+            bind            *:80
+            default_backend service
+
+          backend service
+            mode tcp
+            {%- for key in hosts %}
+            {%- for ip in hosts[key] %}
+            server {{key}}-{{loop.index}} {{ip}}:2181
+            {%- endfor %}
+            {%- endfor %}
+
     spec:
       nodeSelector:
-        unity3d.com/array: data
+        unity3d.com/array: front
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -73,41 +122,24 @@ spec:
                   - key: app
                     operator: In
                     values: 
-                    - kafka
+                    - haproxy
               topologyKey: "kubernetes.io/hostname"
       containers:
-       - image: registry2.applifier.info:5005/ads-infra-kafka-alpine-3.5
-         name: kafka
+       - image: registry2.applifier.info:5005/ads-infra-haproxy-alpine-3.5
+         name: zookeeper
          imagePullPolicy: Always
-         volumeMounts:
-         - name: data
-           mountPath: "/data"
          ports:
+         - containerPort: 80
+           protocol: TCP
+         - containerPort: 443
+           protocol: TCP
          - containerPort: 8000
-           protocol: TCP
-         - containerPort: 9092
-           protocol: TCP
-         - containerPort: 19091
-           protocol: TCP
-         - containerPort: 19092
            protocol: TCP
          env:
           - name: NAMESPACE
             valueFrom:
               fieldRef:
                 fieldPath: metadata.namespace
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-        namespace: test
-        annotations:
-          volume.beta.kubernetes.io/storage-class: ebs
-      spec:
-        accessModes:
-          - ReadWriteOnce
-        resources:
-          requests:
-            storage: 250Gi
 ```
 
 ### Support
