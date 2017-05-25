@@ -3,7 +3,7 @@
 # - please note /tmp/state will be used as our kontrol slave payload
 #
 initial: setup
-terminal: stop
+terminal: shutdown
 states:
 - tag: setup
   shell: |
@@ -14,7 +14,6 @@ states:
     # - override our defaults by what's found in the pod annotations
     #
     mkdir -p /data
-    ls -l /data
     python - <<-EOF
     import os
     import json
@@ -132,11 +131,5 @@ states:
     supervisorctl start telegraf
     supervisorctl start kafka
     supervisorctl start pixy
-  next:
-    - stop
     
-- tag: stop
-  shell: |
-    echo foo    
-  next: 
-    - stop
+- tag: shutdown
