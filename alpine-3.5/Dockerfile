@@ -1,24 +1,15 @@
-FROM registry2.applifier.info:5005/ads-infra-kontrol-alpine-3.5:1.1
+FROM registry2.applifier.info:5005/ads-infra-kontrol-alpine-3.5:1.0.0
 
-ENV KONTROL_MODE=slave,verbose \
+ENV KONTROL_MODE=master,slave \
     KONTROL_PAYLOAD=/data/state \
+    KONTROL_CALLBACK="python /home/kontrol/callback.py" \
     KAFKA_VERSION=0.10.2.1 \
     SCALA_VERSION=2.12 \
-    PIXY_VERSION=0.13.0 \
     GLIBC_VERSION=2.23-r3
 
 ADD resources/ .
 RUN set -ex && \
     mkdir -p /opt && \
     apk add --no-cache bash libc6-compat openjdk8-jre-base && \
-    for pkg in glibc-${GLIBC_VERSION} glibc-bin-${GLIBC_VERSION} glibc-i18n-${GLIBC_VERSION}; do curl -sSL https://github.com/andyshinn/alpine-pkg-glibc/releases/download/${GLIBC_VERSION}/${pkg}.apk -o /tmp/${pkg}.apk; done && \
-    apk add --allow-untrusted /tmp/*.apk && \
-    rm -v /tmp/*.apk && \
-    ( /usr/glibc-compat/bin/localedef --force --inputfile POSIX --charmap UTF-8 C.UTF-8 || true ) && \
-    echo "export LANG=C.UTF-8" > /etc/profile.d/locale.sh && \
-    /usr/glibc-compat/sbin/ldconfig /lib /usr/glibc-compat/lib && \
     mirror=$(curl --stderr /dev/null https://www.apache.org/dyn/closer.cgi\?as_json\=1 | jq -r '.preferred') && \
-    curl -sSL "${mirror}kafka/${KAFKA_VERSION}/kafka_${SCALA_VERSION}-${KAFKA_VERSION}.tgz" | tar -xzf - -C /opt && \
-    curl -L https://github.com/mailgun/kafka-pixy/releases/download/v${PIXY_VERSION}/kafka-pixy-v${PIXY_VERSION}-linux-amd64.tar.gz | tar -xzf - -C /opt && \
-    echo 'hosts: files mdns4_minimal [NOTFOUND=return] dns mdns4' >> /etc/nsswitch.conf && \
-    apk del glibc-i18n
+    curl -sSL "${mirror}kafka/${KAFKA_VERSION}/kafka_${SCALA_VERSION}-${KAFKA_VERSION}.tgz" | tar -xzf - -C /opt
