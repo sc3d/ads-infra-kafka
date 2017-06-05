@@ -3,8 +3,7 @@
 ### Overview
 
 This project is a [**Docker**](https://www.docker.com) image packaging
-[**Apache Kafka 0.10.2.1**](https://kafka.apache.org/) together with
-[**Pixy**](https://github.com/mailgun/kafka-pixy) and
+[**Apache Kafka 0.10.2.1**](https://kafka.apache.org/) with
 [**Kontrol**](https://github.com/UnityTech/ads-infra-kontrol). It is meant
 to be included in a [**Kubernetes**](https://github.com/GoogleCloudPlatform/kubernetes)
 pod.
@@ -19,13 +18,8 @@ Turning the JVM on/off is done via a regular supervisor job. If a broker fails
 
 The initial state will render the various configuration files including the
 [**telegraf**](https://github.com/influxdata/telegraf) one. The broker is configured
-to use dynamic id assignment (e.g from the data volume or zookeeper). Both the broker
-and its proxy are started immediately.
-
-### Pixy
-
-The pixy proxy is bundled in the image as well and configured against the local broker. It
-exposes a gRPC as well as a HTTP API at TCP 19091 and 19092.
+to use dynamic id assignment (e.g from the data volume or zookeeper). The broker
+is started immediately.
 
 ### Building the image
 
@@ -86,10 +80,6 @@ spec:
          - containerPort: 8000
            protocol: TCP
          - containerPort: 9092
-           protocol: TCP
-         - containerPort: 19091
-           protocol: TCP
-         - containerPort: 19092
            protocol: TCP
          env:
           - name: NAMESPACE
