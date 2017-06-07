@@ -1,0 +1,60 @@
+apiVersion: apps/v1beta1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: default
+spec:
+  serviceName: kafka
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: kafka
+        role: broker
+        tier: data
+      # annotations:
+      #   kontrol.unity3d.com/master: kafka.default.svc,haproxy.default.svc
+      #   kontrol.unity3d.com/opentsdb: kairosdb.us-east-1.applifier.info
+      #   kafka.unity3d.com/overrides: |
+      #     default.replication.factor=3
+      #     num.partitions=32
+      #     retention.ms=259200000
+    spec:
+      # nodeSelector:
+      #   unity3d.com/array: data
+      # affinity:
+      #   podAntiAffinity:
+      #     requiredDuringSchedulingIgnoredDuringExecution:
+      #       - labelSelector:
+      #           matchExpressions:
+      #             - key: app
+      #               operator: In
+      #               values: 
+      #               - kafka
+      #         topologyKey: "kubernetes.io/hostname"
+      containers:
+       - image: localhost:5000/ads-infra-kafka-alpine-3.5:1.0.0
+         name: kafka
+         imagePullPolicy: Always
+         volumeMounts:
+         - name: data
+           mountPath: "/data"
+         ports:
+         - containerPort: 8000
+           protocol: TCP
+         - containerPort: 9092
+           protocol: TCP
+         env:
+          - name: NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
